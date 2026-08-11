@@ -1,41 +1,72 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, Header
 from datetime import datetime
 import json
 import os
+import csv
+from io import StringIO
 
 app = FastAPI()
 
-# Now writing to the persistent volume
+# Simple protection (change this token)
+SECRET = "your_secret_token_here"
+
 DATA_FILE = "/data/features.jsonl"
+CSV_FILE = "/data/features.csv"
+
+os.makedirs("/data", exist_ok=True)
 
 @app.post("/webhook")
-async def receive_webhook(request: Request):
+async def webhook(request: Request, authorization: str = Header(None)):
+    # Optional simple protection
+    # if authorization != f"Bearer {SECRET}":
+    #     raise HTTPException(status_code=401, detail="Unauthorized")
+
     data = await request.json()
     data["received_at"] = datetime.utcnow().isoformat()
 
-    # Create the file if it doesn't exist
-    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-
+    # Save as JSONL
     with open(DATA_FILE, "a") as f:
         f.write(json.dumps(data) + "\n")
 
-    print(f"Saved: {data.get('symbol')} | delta={data.get('delta')} | time={data.get('time')}")
     return {"status": "ok"}
 
 @app.get("/")
 def home():
-    return {"message": "Footprint collector is running (persistent storage)"}
+    return {"message": "Footprint Collector V2 is running"}
 
-@app.get("/count")
-def count_records():
+@app.get("/stats")
+def stats():
     if not os.path.exists(DATA_FILE):
-        return {"count": 0, "message": "No data yet"}
+        return {"count": 0}
 
     with open(DATA_FILE, "r") as f:
-        lines = f.readlines()
+        count = sum(1 for _ in f)
 
-    last = json.loads(lines[-1]) if lines else None
-    return {
-        "count": len(lines),
-        "last_record": last
-    }
+    return {"count": count, "file": DATA_FILE}
+
+@app.get("/download")
+def download():
+    """Download all collected data as CSV"""
+    if not os.path.exists(DATA_FILE):
+        return {"error": "No data yet"}
+
+    rows = []
+    with open(DATA_FILE, "r") as f:
+        for line in f:
+            rows.append(json.loads(line))
+
+    if not rows:
+        return {"error": "Empty"}
+
+    # Convert to CSV
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+
+    from fastapi.responses import Response
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=footprint_data.csv"}
+    )
